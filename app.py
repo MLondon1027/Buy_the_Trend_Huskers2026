@@ -25,6 +25,10 @@ st.markdown("""
 This dashboard backtests a momentum strategy where you invest in the top performing stocks from the previous year, 
 with **full compounding** - profits are reinvested each year. Compare this against investing in SPY (S&P 500 ETF) 
 with the same compounding approach.
+
+**Note**: This backtest uses total return data (including dividends) provided by yfinance. Due to data source limitations, 
+we cannot separate price-only returns from dividend-included returns. Both the momentum strategy and SPY benchmark 
+use the same data methodology, ensuring fair comparison.
 """)
 
 # Load S&P 500 membership data for full universe option
@@ -157,31 +161,25 @@ total_investment = st.sidebar.number_input(
 # Calculate investment per stock
 investment_per_stock = total_investment / num_top_stocks
 
-# Dividend inclusion toggle
-include_dividends = st.sidebar.checkbox(
-    "Include Dividend Returns",
-    value=True,
-    help="When enabled, uses 'Adj Close' prices which include dividend reinvestment. When disabled, uses 'Close' prices only. Note: yfinance data may have limitations in providing completely unadjusted data."
-)
+# Debug options
+st.sidebar.subheader("Debug Options")
+show_debug = st.sidebar.checkbox("Show Detailed Selection Process")
+check_specific_year = st.sidebar.number_input("Check Specific Year", min_value=1900, max_value=2100, value=2011) if show_debug else None
 
-def normalize_columns(stock_data, include_dividends=True):
+def normalize_columns(stock_data):
     """Normalize column names to handle different yfinance versions"""
     # Reset index if it's a MultiIndex to get standard columns
     if isinstance(stock_data.columns, pd.MultiIndex):
         stock_data = stock_data.copy()
         stock_data.columns = stock_data.columns.get_level_values(0)
     
-    # Ensure we have the expected columns based on dividend preference
-    if include_dividends:
-        if 'Adj Close' not in stock_data.columns and 'Close' in stock_data.columns:
-            stock_data['Adj Close'] = stock_data['Close']
-    else:
-        if 'Close' not in stock_data.columns and 'Adj Close' in stock_data.columns:
-            stock_data['Close'] = stock_data['Adj Close']
+    # Ensure we have the expected columns (use Adj Close for total return)
+    if 'Adj Close' not in stock_data.columns and 'Close' in stock_data.columns:
+        stock_data['Adj Close'] = stock_data['Close']
     
     return stock_data
 
-def get_sp500_members_for_year(sp500_data, year):
+def get_sp500_members_for_year(sp500_data, year, debug_symbol=None):
     """Get S&P 500 members for a specific year"""
     if sp500_data is None:
         return None
@@ -212,29 +210,19 @@ def get_sp500_members_for_year(sp500_data, year):
     return members
 
 @st.cache_data(ttl=3600)
-def get_stock_data(symbols, start_date, end_date, include_dividends=True):
+def get_stock_data(symbols, start_date, end_date):
     """Fetch historical stock data for given symbols"""
     data = {}
     for symbol in symbols:
         try:
-            # When dividends are disabled, we need to get non-adjusted data
-            # yfinance doesn't have a direct parameter for this, but we can work around it
             stock_data = yf.download(symbol, start=start_date, end=end_date, progress=False)
             if not stock_data.empty:
-                # If dividends are disabled, we'll use Close prices and ignore Adj Close
-                if not include_dividends:
-                    # Create a copy to avoid modifying the original
-                    stock_data = stock_data.copy()
-                    # Remove Adj Close to force use of Close prices
-                    if 'Adj Close' in stock_data.columns:
-                        del stock_data['Adj Close']
-                
-                data[symbol] = normalize_columns(stock_data, include_dividends)
+                data[symbol] = normalize_columns(stock_data)
         except Exception as e:
             st.warning(f"Could not fetch data for {symbol}: {e}")
     return data
 
-def calculate_annual_returns(stock_data, year, include_dividends=True):
+def calculate_annual_returns(stock_data, year):
     """Calculate annual return for a specific year"""
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
@@ -244,17 +232,15 @@ def calculate_annual_returns(stock_data, year, include_dividends=True):
         if len(year_data) < 2:
             return None
         
-        # Use appropriate price column based on dividend preference
-        price_column = 'Adj Close' if include_dividends else 'Close'
-        
-        start_price = year_data[price_column].iloc[0]
-        end_price = year_data[price_column].iloc[-1]
+        # Use Adj Close for total return (includes dividends)
+        start_price = year_data['Adj Close'].iloc[0]
+        end_price = year_data['Adj Close'].iloc[-1]
         annual_return = (end_price - start_price) / start_price
         return annual_return
     except:
         return None
 
-def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investment, num_top_stocks, sp500_data, include_dividends=True):
+def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investment, num_top_stocks, sp500_data, show_debug=False, check_specific_year=None):
     """Run the momentum strategy backtest with compounding and S&P 500 membership filtering"""
     results = []
     
@@ -268,7 +254,7 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
     
     # Get SPY data for comparison
     spy_data = yf.download("SPY", start=f"{start_year-1}-01-01", end=f"{end_year+1}-01-01", progress=False)
-    spy_data = normalize_columns(spy_data, include_dividends)
+    spy_data = normalize_columns(spy_data)
     
     for year in range(start_year, end_year + 1):
         # Calculate returns for previous year
@@ -283,7 +269,7 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
             if sp500_members and symbol not in sp500_members:
                 continue
                 
-            annual_return = calculate_annual_returns(data, prev_year, include_dividends)
+            annual_return = calculate_annual_returns(data, prev_year)
             if annual_return is not None:
                 stock_returns[symbol] = annual_return
         
@@ -298,14 +284,66 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
             top_symbols = []
             top_returns = []
         
-        # Comprehensive debug info for first year
-        if year == start_year and st.checkbox("Show Detailed Selection Process"):
+        # Additional filter: Ensure selected stocks are still in S&P 500 in the buying year
+        sp500_members_current_year = get_sp500_members_for_year(sp500_data, year)
+        filtered_symbols = []
+        filtered_returns = []
+        filtered_stocks = []
+        removed_stocks = []
+        
+        # Debug: Check if S&P 500 data is available
+        if show_debug and (year == start_year or year == check_specific_year):
+            st.write(f"**DEBUG: S&P 500 Data Available**: {sp500_data is not None}")
+            st.write(f"**DEBUG: Current Year Members**: {len(sp500_members_current_year) if sp500_members_current_year else 'None'}")
+            if sp500_members_current_year:
+                st.write(f"**DEBUG: Sample Current Year Members**: {list(sp500_members_current_year)[:5]}")
+                st.write(f"**DEBUG: Is CMI in {year} S&P 500**: {'CMI' in sp500_members_current_year}")
+                # Check if CMI is in the changes
+                cmi_changes = [c for c in sp500_data['changes'] if c['added'] == 'CMI' or c['removed'] == 'CMI']
+                st.write(f"**DEBUG: CMI Changes**: {cmi_changes}")
+        
+        for symbol, ret in zip(top_symbols, top_returns):
+            # If we have S&P 500 data, check membership in current year
+            if sp500_members_current_year and symbol not in sp500_members_current_year:
+                removed_stocks.append((symbol, ret, "Not in S&P 500 in buying year"))
+                if show_debug and (year == start_year or year == check_specific_year):
+                    st.write(f"**DEBUG: Removing {symbol} - not in S&P 500 in {year}**")
+                continue  # Skip stocks that are no longer in S&P 500
+            filtered_symbols.append(symbol)
+            filtered_returns.append(ret)
+            filtered_stocks.append((symbol, ret))
+        
+        # Update to use filtered list
+        top_symbols = filtered_symbols
+        top_returns = filtered_returns
+        top_stocks = filtered_stocks
+        
+        # Comprehensive debug info for first year or specific year check
+        if show_debug and (year == start_year or year == check_specific_year):
             st.subheader(f"Selection Process for Year {year}")
             st.write(f"**Selection Year**: {prev_year} (used to pick stocks for {year})")
-            st.write(f"**Performance Year**: {year} (calculate returns for selected stocks)")
+            st.write(f"**Buying Year**: {year} (stocks must be in S&P 500 this year)")
+            st.write(f"**S&P 500 Data Available**: {sp500_data is not None}")
             st.write(f"**S&P 500 Members in {prev_year}**: {len(sp500_members) if sp500_members else 'N/A'}")
+            st.write(f"**S&P 500 Members in {year}**: {len(sp500_members_current_year) if sp500_members_current_year else 'N/A'}")
             st.write(f"**Stocks with {prev_year} Data**: {len(stock_returns)}")
-            st.write(f"**Top {num_stocks_to_select} Selected**: {top_symbols}")
+            st.write(f"**Top {num_stocks_to_select} Initially Selected**: {len(top_symbols) + len(removed_stocks)}")
+            
+            # Check specific stocks
+            if 'CMI' in [s[0] for s in top_stocks] or 'CMI' in [s[0] for s in removed_stocks]:
+                st.write(f"**CMI Status**:")
+                st.write(f"  - In {prev_year} S&P 500: {'✅' if sp500_members and 'CMI' in sp500_members else '❌'}")
+                st.write(f"  - In {year} S&P 500: {'✅' if sp500_members_current_year and 'CMI' in sp500_members_current_year else '❌'}")
+                st.write(f"  - Final Status: {'Selected' if 'CMI' in top_symbols else 'Removed'}")
+            
+            if removed_stocks:
+                st.write(f"**Removed Stocks (not in S&P 500 in {year})**:")
+                for symbol, ret, reason in removed_stocks:
+                    in_sp500_prev = "✅" if sp500_members and symbol in sp500_members else "❌"
+                    in_sp500_curr = "✅" if sp500_members_current_year and symbol in sp500_members_current_year else "❌"
+                    st.write(f"  {symbol}: {ret:.2%} - {reason} [{prev_year}: {in_sp500_prev}, {year}: {in_sp500_curr}]")
+            
+            st.write(f"**Final Selected (still in S&P 500)**: {top_symbols}")
             st.write(f"**Selection Returns ({prev_year})**:")
             for i, (symbol, ret) in enumerate(top_stocks):
                 st.write(f"  {i+1}. {symbol}: {ret:.2%}")
@@ -318,7 +356,7 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
         
         for symbol in top_symbols:
             if symbol in stock_data_dict:
-                current_year_return = calculate_annual_returns(stock_data_dict[symbol], year, include_dividends)
+                current_year_return = calculate_annual_returns(stock_data_dict[symbol], year)
                 if current_year_return is not None:
                     stock_value = investment_per_stock_this_year * (1 + current_year_return)
                     year_portfolio_value += stock_value
@@ -334,21 +372,7 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
                         'value': investment_per_stock_this_year,
                         'investment': investment_per_stock_this_year
                     }
-        
-        # Performance debug info for first year
-        if year == start_year and st.checkbox("Show Detailed Performance Process"):
-            st.subheader(f"Performance Calculation for Year {year}")
-            st.write(f"**Investment per Stock**: ${investment_per_stock_this_year:,.2f}")
-            st.write(f"**Performance Returns ({year})**:")
-            for symbol, perf in stock_performance.items():
-                st.write(f"  {symbol}: {perf['return']:.2%} → ${perf['value']:,.2f}")
-        
-        # Debug info for first year performance
-        if year == start_year and st.checkbox("Show Performance Debug Info"):
-            st.write(f"Year {year}: Performance calculation")
-            st.write(f"Selected stocks held during {year}:")
-            for symbol, perf in stock_performance.items():
-                st.write(f"  {symbol}: {perf['return']:.2%} (in {year}) - Value: ${perf['value']:,.2f}")
+
         
         # Update portfolio value for next year (compounding)
         portfolio_value = year_portfolio_value
@@ -358,10 +382,9 @@ def run_momentum_strategy(stock_data_dict, start_year, end_year, total_investmen
         
         # Calculate SPY performance for comparison with compounding
         spy_year_data = spy_data.loc[f"{year}-01-01":f"{year}-12-31"]
-        spy_price_column = 'Adj Close' if include_dividends else 'Close'
-        if len(spy_year_data) > 0 and spy_price_column in spy_year_data.columns:
-            spy_start = spy_year_data[spy_price_column].iloc[0]
-            spy_end = spy_year_data[spy_price_column].iloc[-1]
+        if len(spy_year_data) > 0 and 'Adj Close' in spy_year_data.columns:
+            spy_start = spy_year_data['Adj Close'].iloc[0]
+            spy_end = spy_year_data['Adj Close'].iloc[-1]
         else:
             spy_start = None
             spy_end = None
@@ -401,21 +424,12 @@ if st.button("Run Backtest"):
         start_date = f"{min_year - 1}-01-01"
         end_date = f"{max_year}-12-31"
         
-        stock_data_dict = get_stock_data(selected_stocks, start_date, end_date, include_dividends)
+        stock_data_dict = get_stock_data(selected_stocks, start_date, end_date)
         
         if not stock_data_dict:
             st.error("Could not fetch stock data. Please check your internet connection and try again.")
         else:
             st.success(f"Successfully fetched data for {len(stock_data_dict)} stocks")
-            
-            # Debug info to show what columns are available
-            if st.checkbox("Show Debug Info"):
-                st.write("Data columns available for first stock:")
-                first_symbol = list(stock_data_dict.keys())[0]
-                st.write(f"Symbol: {first_symbol}")
-                st.write("Columns:", stock_data_dict[first_symbol].columns.tolist())
-                st.write("Sample data:")
-                st.write(stock_data_dict[first_symbol].head())
             
             # Run backtest
             results, spy_data = run_momentum_strategy(
@@ -425,7 +439,8 @@ if st.button("Run Backtest"):
                 total_investment,
                 num_top_stocks,
                 sp500_data,
-                include_dividends
+                show_debug,
+                check_specific_year
             )
             
             # Display results
@@ -546,18 +561,23 @@ st.sidebar.markdown(f"""
 ### How it works:
 1. At the start of each year, the strategy looks at the previous year's returns
 2. It selects the top {num_top_stocks} performing stocks **from S&P 500 members only**
-3. Invests equal portions of the **total portfolio value** in each stock
-4. Holds for the entire year
-5. **Reinvests all profits** at the start of the next year (compounding)
-6. Rebalances annually with the new total portfolio value
+3. **Additional Filter**: Ensures selected stocks are still S&P 500 members in the buying year
+4. Invests equal portions of the **total portfolio value** in each stock
+5. Holds for the entire year
+6. **Reinvests all profits** at the start of the next year (compounding)
+7. Rebalances annually with the new total portfolio value
 
 ### Historical S&P 500 Filtering:
-✅ Only stocks that were actually in the S&P 500 during the selection year are considered
+✅ Selection based on previous year S&P 500 membership
+✅ Buying filtered to current year S&P 500 membership
 ✅ Uses historical membership data from 1976-present
 ✅ Ensures accurate backtesting with survivorship bias correction
+✅ Prevents buying stocks that left the S&P 500
 
-### Dividend Returns:
-{'✅ Dividend returns INCLUDED (uses Adj Close prices)' if include_dividends else '❌ Dividend returns EXCLUDED (uses Close prices only)'}
+### Data Note:
+📊 Uses total return data (includes dividends) from yfinance
+⚠️ Due to data source limitations, cannot separate price-only vs dividend returns
+✅ Both strategy and SPY use same methodology for fair comparison
 
 ### Current Settings:
 - Top stocks per year: {num_top_stocks}
