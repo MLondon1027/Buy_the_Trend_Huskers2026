@@ -20,7 +20,82 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📈 Buy the Trend - Momentum Strategy Backtesting")
+# Nebraska-themed styling
+nebraska_theme = """
+<style>
+    /* Nebraska Cornhuskers Theme - Reduced Red */
+    .stApp {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    }
+    
+    /* Main content area with light background */
+    .main .block-container {
+        background-color: #ffffff;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Headers in Nebraska scarlet */
+    h1, h2, h3 {
+        color: #E31B23 !important;
+        font-weight: bold;
+    }
+    
+    /* Nebraska-themed header - Only red in header */
+    .nebraska-header {
+        background: linear-gradient(90deg, #E31B23 0%, #C41E3A 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        text-align: center;
+        border: 3px solid #000000;
+    }
+    
+    .nebraska-title {
+        font-size: 2.5em;
+        font-weight: bold;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+    
+    .nebraska-subtitle {
+        font-size: 1.2em;
+        color: #ECECEC;
+        margin-top: 10px;
+    }
+    
+    /* Simple N logo */
+    .n-logo {
+        font-size: 4em;
+        font-weight: bold;
+        color: #ECECEC;
+        text-shadow: 3px 3px 6px rgba(0,0,0,0.4);
+        border: 4px solid #ECECEC;
+        border-radius: 10px;
+        width: 80px;
+        height: 80px;
+        line-height: 80px;
+        margin: 0 auto 15px auto;
+        background: #E31B23;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f8f9fa;
+    }
+</style>
+"""
+st.markdown(nebraska_theme, unsafe_allow_html=True)
+
+# Nebraska-themed header
+st.markdown("""
+<div class="nebraska-header">
+    <div class="n-logo">N</div>
+    <div class="nebraska-title">🏈 Buy the Trend - Huskers Edition</div>
+    <div class="nebraska-subtitle">Momentum Strategy Backtesting Dashboard</div>
+</div>
+""", unsafe_allow_html=True)
 st.markdown("""
 This dashboard backtests a momentum strategy where you invest in the top performing stocks from the previous year, 
 with **full compounding** - profits are reinvested each year. Compare this against investing in SPY (S&P 500 ETF) 
